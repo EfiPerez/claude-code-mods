@@ -1,0 +1,25 @@
+{
+  "name": "effort-picker",
+  "version": "1.0.0",
+  "description": "Sets each Claude request's effort level from the task, not the prompt: Claude picks it once it understands the work, and helpers get a level per job.",
+  "author": { "name": "Efi Perez" },
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "baseline": {
+      "type": "string",
+      "title": "Starting effort for each prompt",
+      "description": "The level every automatic prompt starts at, before Claude picks one for the task.",
+      "required": false,
+      "options": ["low", "medium", "high", "xhigh"],
+      "default": "high"
+    },
+    "staleDays": {
+      "type": "number",
+      "title": "Remind me when the effort rules are this many days old",
+      "description": "Show a reminder to check for a plugin update once the effort rules were last checked against Anthropic's docs more than this many days ago. 0 turns it off.",
+      "required": false,
+      "default": 90
+    }
+  }
+}
