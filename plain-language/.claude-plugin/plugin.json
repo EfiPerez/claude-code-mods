@@ -1,0 +1,17 @@
+{
+  "name": "plain-language",
+  "version": "1.0.0",
+  "description": "Claude's chat replies to you in plain, CEFR-level English: no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail.",
+  "author": { "name": "Efi Perez" },
+  "license": "MIT",
+  "userConfig": {
+    "cefrLevel": {
+      "type": "string",
+      "title": "English level for chat replies (CEFR)",
+      "description": "A2 = very simple, everyday words. B1 = simple, but can explain reasons and trade-offs.",
+      "options": ["A2", "B1"],
+      "required": false,
+      "default": "B1"
+    }
+  }
+}
