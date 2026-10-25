@@ -90,7 +90,7 @@ async function userApproves($: EngineInterface, level: Level, why: string): Prom
 export const LOCK_MARK = '[effort-locked] '
 export const KEEP_IT = 'The user set the effort for this prompt; keep it.'
 const ULTRATHINK = /\bultrathink\b/i
-const FRONTMATTER = /^�?---\r?\n([\s\S]*?)\r?\n---/
+const FRONTMATTER = /^\uFEFF?---\r?\n([\s\S]*?)\r?\n---/
 const EFFORT_KEY = /^effort\s*:/m
 
 const LOOPS = { plugin: 'effort-picker', key: 'loops' } as const
