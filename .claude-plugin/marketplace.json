@@ -1,0 +1,17 @@
+{
+  "name": "efi-mods",
+  "owner": {"name": "Efi Perez", "url": "https://github.com/EfiPerez"},
+  "metadata": {"description": "Claude Code mods for everyday workflows", "version": "1.0.0"},
+  "plugins": [
+    {
+      "name": "effort-picker",
+      "source": "./effort-picker",
+      "description": "Sets each request's effort level from the task, not the prompt: Claude picks a level once it understands the work, and helpers get a level per job."
+    },
+    {
+      "name": "plain-language",
+      "source": "./plain-language",
+      "description": "Claude's chat replies to you in plain, CEFR-level English: no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail."
+    }
+  ]
+}
