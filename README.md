@@ -20,6 +20,7 @@ Then install only the mods you want:
 |---|---|---|
 | `effort-picker` | Sets each request's effort level from the task, not the prompt: Claude picks a level once it understands the work, and helpers get a level per job. | `/plugin install effort-picker@efi-mods` |
 | `plain-language` | Claude's chat replies to you in plain, CEFR-level English (A2 or B1): no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail. | `/plugin install plain-language@efi-mods` |
+| `plan-review` | When you approve a plan in plan mode, saves it to `plans/` and has Claude run the `codec-review` skill on it before any code is written. **Needs `codec-review`** — see below. | `/plugin install plan-review@efi-mods` |
 
 Alternatively download the repo and load a mod locally using
 `claude --plugin-dir <downloaded-repo>/<mod>` on a compatible Claude Code
@@ -71,6 +72,36 @@ Third-party marketplace auto-update is off by default. Run
 - Skipped on every path for headless runs (`claude -p`, the SDK); the
   system-prompt section is also skipped for `--bare` and teammates.
 
+## plan-review
+
+- **Requires the `codec-review` skill**, from the `codec-loop` plugin (version 1.1.0 or later)
+  in the companion marketplace
+  [`EfiPerez/claude-code-skills`](https://github.com/EfiPerez/claude-code-skills):
+
+  ```
+  /plugin marketplace add EfiPerez/claude-code-skills
+  /plugin install codec-loop@efi-skills
+  ```
+
+  `codec-review` in turn needs the OpenAI Codex CLI (or its same-family fallback) — see that
+  repository's README, including its **Privacy** section. If `codec-review` is not installed,
+  `plan-review` still saves the plan, requests no review, and shows a notice with the install
+  commands.
+- When you approve a plan (`ExitPlanMode`), it saves the plan to `plans/<slug>.md` in the
+  session's project folder (a timestamp is added if that name exists) and tells Claude to run
+  `codec-review` on that absolute path, and not to start implementing until the review is
+  signed off. Plans approved by subagents are ignored.
+- **Windows:** it also keeps a review record, `plans/.codec-reviewed.json`, keyed by the plan's
+  SHA-256, using Windows PowerShell (`hooks/sentinel.ps1`). An unchanged plan approved again
+  is not reviewed twice, and a second approval while a review is running does not start
+  another. `codec-review` updates the record as it works (renews a 20-minute lease each round,
+  marks the plan `reviewed` at the end, removes it on abort). Commit or ignore `plans/` as you
+  prefer; the `.codec-*` files are bookkeeping.
+- **macOS / Linux:** no review record is kept, so an unchanged plan approved again is reviewed
+  again. Everything else works the same. Not tested on macOS.
+- Off switch: start Claude Code with the environment variable `CODEC_REVIEW_ACTIVE` set to any
+  value, and the mod does nothing.
+
 ## Prerequisites and supported surfaces
 
 - Requires Claude Code with the mods/hooks engine.
@@ -79,7 +110,7 @@ Third-party marketplace auto-update is off by default. Run
   `prompt.section`, `prompt.context`, `prompt.compose`, `skill.prompt`,
   `attribution.text` and `settings.read`. There is no user-side switch;
   an administrator must manage the plugin to lift it.
-  - `effort-picker` uses none of those events.
+  - `effort-picker` and `plan-review` use none of those events.
   - `plain-language` loses its system-prompt section there and falls back to
     the first-prompt context path described above. The rules then reach the
     model as part of the first message's context rather than the system
@@ -97,5 +128,3 @@ MIT — see [LICENSE](LICENSE).
 ## Credit
 
 Built by Efi Perez.
-
-
