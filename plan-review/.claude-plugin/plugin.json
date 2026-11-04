@@ -1,0 +1,7 @@
+{
+  "name": "plan-review",
+  "version": "1.0.0",
+  "description": "When you approve a plan in plan mode, saves it to plans/ and has Claude run the codec-review skill on it before any code is written. Needs codec-review (codec-loop in the efi-skills marketplace).",
+  "author": { "name": "Efi Perez" },
+  "license": "MIT"
+}
