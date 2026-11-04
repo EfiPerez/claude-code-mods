@@ -1,7 +1,13 @@
 {
   "name": "efi-mods",
-  "owner": {"name": "Efi Perez", "url": "https://github.com/EfiPerez"},
-  "metadata": {"description": "Claude Code mods for everyday workflows", "version": "1.0.0"},
+  "owner": {
+    "name": "Efi Perez",
+    "url": "https://github.com/EfiPerez"
+  },
+  "metadata": {
+    "description": "Claude Code mods for everyday workflows",
+    "version": "1.1.0"
+  },
   "plugins": [
     {
       "name": "effort-picker",
@@ -12,6 +18,11 @@
       "name": "plain-language",
       "source": "./plain-language",
       "description": "Claude's chat replies to you in plain, CEFR-level English: no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail."
+    },
+    {
+      "name": "plan-review",
+      "source": "./plan-review",
+      "description": "When you approve a plan in plan mode, saves it to plans/ and has Claude run the codec-review skill on it before any code is written. Needs codec-review (codec-loop in the efi-skills marketplace)."
     }
   ]
 }
