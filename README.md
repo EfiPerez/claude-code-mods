@@ -47,7 +47,13 @@ Third-party marketplace auto-update is off by default. Run
   | Context ceiling | 40% or more | Asks for `/handoff` now |
   | Idle keep-alive | ~55 min since your last message and Claude's last reply | One keep-alive: a forked request that re-reads the cache (about the price of a cache read) and adds nothing to the transcript |
   | Idle handoff | idle again after that keep-alive (~2 h total) | Asks for `/handoff`, then pauses until your next prompt |
-  | 5-hour usage | 98% (waits for the turn to end) / 99% (now) | Asks for `/handoff`, once per 5-hour window. Off unless a usage source exists (below) |
+  | 5-hour usage | 98% (waits for the turn to end) / 99% (now) | Asks for `/handoff`, once per 5-hour window. At 99% while Claude is mid-task, the request is added to the running task (Claude reads it at its next step) instead of waiting for the task to end. Off unless a usage source exists (below) |
+
+- **5-minute cache:** if the last 3 replies that wrote cache all used the 5-minute cache
+  tier (no `"promptCacheTtl": "1h"` setting), the idle keep-alive and idle handoff are
+  switched off for that chat, because the cache is long gone by then. A one-time notice per
+  chat says so and suggests adding `"promptCacheTtl": "1h"` to `settings.json`. The context
+  and usage handoffs stay on.
 
 - Safety rules: one context handoff per session; it **never** spends a keep-alive or starts
   a handoff on an already-expired cache (it waits for your own next prompt); it waits while
