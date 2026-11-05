@@ -1,5 +1,11 @@
 # Changelog
 
+## [cache-monitor 1.1.0] - 2026-11-05
+### Added
+- 5-minute cache detection: when the last 3 cache-writing replies all used the 5-minute tier, the idle keep-alive and idle handoff are off for that chat, and a one-time notice suggests `"promptCacheTtl": "1h"` in `settings.json`. Context and usage handoffs are unchanged
+### Changed
+- The 99% usage handoff no longer waits for a running task to end (it could land 3-16 minutes late): it is added to the running task, and Claude reads it at its next step. If the engine refuses that, the turn ends first, or the task ends without running `/handoff`, the usual handoff prompt is sent instead
+
 ## [cache-monitor 1.0.1] - 2026-11-05
 ### Fixed
 - No second handoff after a handoff: the mod's own `[cache-monitor]` handoff prompt no longer counts as a typed message, and after any handoff the chat gets no idle keep-alive or idle handoff until you type again
