@@ -241,8 +241,40 @@ function findLastUserTs(file) {
   return ts;
 }
 
+// Which cache tier this session writes: '5m', '1h' or 'unknown'. Claude Code normally writes
+// the 1h tier, but without "promptCacheTtl": "1h" a surface can drop to 5 min (terminal,
+// 18/10/2026; every Python SDK session), and then a keep-alive at ~55 min idle is pure cost.
+// '5m' only when the last TTL_SAMPLE cache-writing replies are all 5m-only: 11 of ~750
+// chats mixed both tiers, so one 5m write must not switch the monitor off. Rows that write
+// nothing (pure cache reads) carry no signal and are skipped. A write is a count > 0 (a
+// negative or non-numeric field is no write). The tail escalates like the idle scan: one
+// tool result can fill 64KB, which read as 'unknown' and left a 5m chat's keep-alives on.
+const TTL_SAMPLE = 3;
+function readCacheTtl(file) {
+  let size;
+  try { size = fs.statSync(file).size; } catch { return 'unknown'; }
+  for (const step of IDLE_TAIL_STEPS) {
+    const lines = tailLines(file, step);
+    let five = 0;
+    for (let i = lines.length - 1; i >= 0 && five < TTL_SAMPLE; i--) {
+      let o;
+      try { o = JSON.parse(lines[i]); } catch { continue; }
+      if (!o || o.type !== 'assistant' || !o.message || !o.message.usage) continue;
+      const cc = o.message.usage.cache_creation;
+      if (!cc) continue;
+      const h1 = Number(cc.ephemeral_1h_input_tokens) > 0;
+      const m5 = Number(cc.ephemeral_5m_input_tokens) > 0;
+      if (h1) return '1h';
+      if (m5) five++;
+    }
+    if (five >= TTL_SAMPLE) return '5m';
+    if (step >= size) break;          // already read the whole file
+  }
+  return 'unknown';
+}
+
 function readSession(file) {
-  return { usage: readUsage(file), lastUser: findLastUserTs(file) };
+  return { usage: readUsage(file), lastUser: findLastUserTs(file), cacheTtl: readCacheTtl(file) };
 }
 
 function readState(slug) {
@@ -321,7 +353,7 @@ function computeStatus(workspacePath, now = Date.now(), sessionId = null) {
   if (!file) return { ok: false, reason: 'no session transcript yet' };
   const sid = path.basename(file, '.jsonl');
 
-  const { usage, lastUser } = readSession(file);
+  const { usage, lastUser, cacheTtl } = readSession(file);
   if (!usage) return { ok: false, reason: 'no usage data in session yet' };
 
   const u = usage.u;
@@ -354,6 +386,9 @@ function computeStatus(workspacePath, now = Date.now(), sessionId = null) {
     showCtx: ctxPct <= CC_PILL_SHOWS_ABOVE,
     remainMs: Math.max(0, remainMs),
     expired,
+    // remainMs/expired still assume 1h on purpose: every cold-cache guard keys off them, and
+    // the context/usage handoffs must stay on in a 5-min chat. Only decide()'s idle branch reads this.
+    cacheTtl,
     costUsd,
     pings: st.pings || 0,
     pingCap: st.pingCap == null ? 1 : st.pingCap,
@@ -438,7 +473,7 @@ module.exports = {
   sessionScoped, sessionFields, SESSION_FIELDS, isLoopOverdue, loopAgeMin, OVERDUE_GRACE_MIN, DEFAULT_INTERVAL_MIN,
   fmtDuration, fmtCost,
   resolveProjectDir, newestProjectDirAnywhere, newestTranscript, multipleActiveTranscripts, AMBIGUOUS_WINDOW_MS,
-  tailLines, isGenuineUserMessage, readSession, readUsage, findLastUserTs, modelInfo, shortModelLabel,
+  tailLines, isGenuineUserMessage, readSession, readUsage, readCacheTtl, TTL_SAMPLE, findLastUserTs, modelInfo, shortModelLabel,
   usableContext, MAX_OUTPUT_RESERVE, WORKING_MARGIN, CC_PILL_SHOWS_ABOVE,
   CACHE_TTL_MIN, CTX_WARN, CTX_CEIL, STATE_DIR, PROJECTS_DIR,
 };
