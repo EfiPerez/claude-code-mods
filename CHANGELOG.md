@@ -1,5 +1,12 @@
 # Changelog
 
+## [cache-monitor 1.0.1] - 2026-11-05
+### Fixed
+- No second handoff after a handoff: the mod's own `[cache-monitor]` handoff prompt no longer counts as a typed message, and after any handoff the chat gets no idle keep-alive or idle handoff until you type again
+- The idle handoff comes ~2 hours after your last message again: a keep-alive now schedules the next check at least 45 minutes out, and 5-hour usage pacing no longer shortens it
+- After `/clear`, a turn left open in the old session no longer delays the new session's context handoff, and `/monitor-off` / `/monitor-on` always act on the current session
+- Windows: a record no longer fails while another record is releasing the state lock; a note containing a line break stays on one log line
+
 ## [cache-monitor 1.0.0] - 2026-11-04
 ### Added
 - `cache-monitor` - keeps the 1-hour prompt cache warm (one keep-alive after ~55 idle minutes) and asks Claude to write a `/handoff` at 35-40% context, after ~2 hours idle, or at 98%/99% of the 5-hour usage limit. Zero-token checks by the bundled `lib/monitor.js` on a 60-second timer; `/monitor-off` and `/monitor-on` per session. Needs Node.js and a `/handoff` skill (`session-handoff` in `EfiPerez/claude-code-skills`)
