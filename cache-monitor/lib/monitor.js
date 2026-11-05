@@ -307,6 +307,13 @@ function decideContextIdle(status, st) {
   const repliedRecently = !status.expired && Number.isFinite(status.remainMs) &&
     status.remainMs > (CACHE_LEAD_MIN + 1) * 60000;
   if (status.idleMin != null && status.idleMin >= IDLE_TRIGGER_MIN && !repliedRecently) {
+    // On the 5-minute cache tier the cache died ~50 min before this branch can fire, so a
+    // keep-alive only re-writes it at full price and the idle handoff has no cache to protect.
+    // Context and usage handoffs above stay on: they do not depend on the TTL.
+    if (status.cacheTtl === '5m') {
+      return { action: 'noop', urgency: 'ttl-5m', nextMin: st.intervalMin || BASE_INTERVAL_MIN,
+               why: 'idle ' + status.idleMin + ' min, but this session writes the 5-minute cache tier - no keep-alive or idle handoff; set "promptCacheTtl": "1h" in settings.json' };
+    }
     // A handoff (usage, context or idle) already went out and nothing was typed since: the
     // state is saved, so a keep-alive is wasted spend and a second handoff a duplicate.
     // The user's next typed message moves lastTypedAt past handoffAt and the idle path is live again.
@@ -363,6 +370,7 @@ async function cmdStatus(a) {
     conversationTokens: status.prefixTokens,
     cacheMinutesLeft: +(status.remainMs / 60000).toFixed(1),
     cacheExpired: status.expired,
+    cacheTtl: status.cacheTtl,
     nextMessageCost: core.fmtCost(status.costUsd),
     idleMinutes: status.idleMin,
     fiveHourUsage: {
