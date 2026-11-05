@@ -218,6 +218,7 @@ async function syncSession($: EngineInterface) {
   paused = false
   armed = false
   handoffTurnId = ''
+  turnRunning = false // a turn left open in the old session must not defer the new one's handoff
   lastKeepaliveAt = 0
   shells.clear()
   nextDueAt = (await $.clock.now()) + 2 * 60_000
@@ -313,7 +314,10 @@ export const register: Register = on => {
     return next(e)
   })
 
+  // Both commands sync first: right after /clear the id may not have been re-read yet, and the
+  // old session's off file must not be written or cleared from the new one.
   on('command.run', { command: 'monitor-off' }, async $ => {
+    await syncSession($)
     if (!slug) return { text: 'The monitor has no session data yet; nothing to turn off.' }
     await $.fs.write(offMarker(), sessionId)
     paused = true
@@ -321,6 +325,7 @@ export const register: Register = on => {
     return { text: 'Cache + context monitor is off for this session. /monitor-on restarts it.' }
   })
   on('command.run', { command: 'monitor-on' }, async $ => {
+    await syncSession($)
     if (await isOff($)) await $.fs.write(offMarker(), '')
     paused = false
     nextDueAt = 0
