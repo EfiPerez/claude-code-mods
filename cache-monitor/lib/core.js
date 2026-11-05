@@ -168,6 +168,10 @@ const ARTIFACT_PREFIXES = [
   '<local-command-caveat>', '<command-name>', '<command-message>',
   '<local-command-stdout>', '<system-reminder>', 'Base directory for this skill:',
   '[CACHE-MONITOR]',   // the loop's own wake-ups carry this sentinel
+  // The mod's handoff prompts. startsWith is case-sensitive: without this line every handoff
+  // prompt read as a typed message and restarted idleMin, so a keep-alive and a second
+  // (idle) handoff followed a handoff.
+  '[cache-monitor]',
   '<task-notification>',   // background task finished; not typed
 ];
 
@@ -253,7 +257,9 @@ function readState(slug) {
 // had been written, and decide() skipped the context triggers entirely. The state
 // now records which session its counters belong to, and a different session reads
 // them as zero. Missing sessionId (pre-fix state) counts as a different session.
-const SESSION_FIELDS = { pings: 0, handoffFired: false, contextHandoffFired: false, usageHandoffWindow: null };
+// handoffAt (ms): when this session last recorded any handoff-*; decide() compares it with
+// the last typed message, so a chat that already handed off gets no idle keep-alive/handoff.
+const SESSION_FIELDS = { pings: 0, handoffFired: false, contextHandoffFired: false, usageHandoffWindow: null, handoffAt: null };
 
 // Those fields are kept per session in st.sessions[id]: with only the
 // top-level copy, a second chat in the same project zeroed them on its first record,
@@ -362,6 +368,8 @@ function computeStatus(workspacePath, now = Date.now(), sessionId = null) {
     // last reply. The keep-alive fork never lands in the transcript, so this still
     // gives the ~2h keep-alive -> handoff sequence.
     idleMin: Math.round((now - Date.parse(lastUser || usage.ts)) / 60000),
+    // The last message the user really typed (ms), null when none: unlike idleMin, no fallback.
+    lastTypedAt: lastUser ? Date.parse(lastUser) : null,
   };
 }
 
