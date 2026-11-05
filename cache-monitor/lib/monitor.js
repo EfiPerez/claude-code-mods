@@ -196,9 +196,16 @@ async function lockState(slug) {
       process.on('exit', release);
       return release;
     } catch (e) {
-      if (e.code !== 'EEXIST') throw e;
+      // Windows reports EPERM/EACCES/EBUSY while another process is deleting the lock
+      // file: that is contention too, not a failure.
+      if (!['EEXIST', 'EPERM', 'EACCES', 'EBUSY'].includes(e.code)) throw e;
       let age = 0;
-      try { age = Date.now() - fs.statSync(lock).mtimeMs; } catch { continue; }
+      try { age = Date.now() - fs.statSync(lock).mtimeMs; }
+      catch {
+        if (Date.now() - start > LOCK_WAIT_MS) throw new Error('state file is locked by another record; try again');
+        await new Promise(r => setTimeout(r, 50));
+        continue;
+      }
       if (age > LOCK_STALE_MS) { reclaimStale(lock); continue; }
       if (Date.now() - start > LOCK_WAIT_MS) throw new Error('state file is locked by another record; try again');
       await new Promise(r => setTimeout(r, 50));
@@ -232,7 +239,8 @@ function saveState(slug, st) {
 
 function appendLog(slug, fields) {
   ensureDir();
-  const line = Object.entries(fields).map(([k, v]) => k + '=' + v).join('\t');
+  // One physical line per record: a note may carry a line break (e.g. an engine error text).
+  const line = Object.entries(fields).map(([k, v]) => k + '=' + String(v).replace(/[\r\n]+/g, ' ')).join('\t');
   fs.appendFileSync(logPath(slug), new Date().toISOString() + '\t' + line + '\n', 'utf8');
 }
 
@@ -270,7 +278,9 @@ function decide(status, st) {
     return { action: 'consider-handoff-usage', urgency: 'usage-window', nextMin: 1,
              why: '5-hour usage is at ' + fh.pct + '%, inside the ' + USAGE_HANDOFF_PCT + '-' + USAGE_CEIL_PCT + '% window - fire once the current task finishes, otherwise wait' };
   }
-  if (usageLive && d.nextMin != null) {
+  // Not after a keep-alive: an earlier check would find the chat still idle with the
+  // keep-alive spent and fire handoff-idle ~1 h early instead of after ~2 h idle.
+  if (usageLive && d.nextMin != null && d.action !== 'keepalive') {
     const floor = status.expired ? USAGE_IDLE_FLOOR_MIN : 1;
     const n = Math.max(floor, Math.floor((USAGE_HANDOFF_PCT - fh.pct) / USAGE_MAX_BURN_PER_MIN));
     if (n < d.nextMin) { d.nextMin = n; d.why += '; 5-hour usage ' + fh.pct + '%, next check in ' + n + ' min'; }
@@ -297,11 +307,21 @@ function decideContextIdle(status, st) {
   const repliedRecently = !status.expired && Number.isFinite(status.remainMs) &&
     status.remainMs > (CACHE_LEAD_MIN + 1) * 60000;
   if (status.idleMin != null && status.idleMin >= IDLE_TRIGGER_MIN && !repliedRecently) {
+    // A handoff (usage, context or idle) already went out and nothing was typed since: the
+    // state is saved, so a keep-alive is wasted spend and a second handoff a duplicate.
+    // The user's next typed message moves lastTypedAt past handoffAt and the idle path is live again.
+    if (st.handoffAt != null && (status.lastTypedAt == null || status.lastTypedAt <= st.handoffAt)) {
+      return { action: 'noop', urgency: 'handed-off', nextMin: st.intervalMin || BASE_INTERVAL_MIN,
+               why: 'idle ' + status.idleMin + ' min, but a handoff was already sent and nothing was typed since - no keep-alive or idle handoff' };
+    }
     if (st.pings >= (st.pingCap == null ? PING_CAP : st.pingCap)) {
       return { action: 'handoff-idle', urgency: 'idle-final', nextMin: null,
                why: 'idle ' + status.idleMin + ' min with a keep-alive already spent - write the handoff and stop' };
     }
-    return { action: 'keepalive', urgency: 'idle', nextMin: st.intervalMin || BASE_INTERVAL_MIN,
+    // At least BASE_INTERVAL_MIN: the self-tuned interval can sit at the 15-min floor, which
+    // fired the idle handoff ~15 min after the keep-alive instead of ~2 h idle. Not more than
+    // 45 either: the mod treats a keep-alive as warm for 55 min only.
+    return { action: 'keepalive', urgency: 'idle', nextMin: Math.max(st.intervalMin || BASE_INTERVAL_MIN, BASE_INTERVAL_MIN),
              why: 'idle ' + status.idleMin + ' min - this wake-up refreshed the cache' };
   }
   // Only here: after a keep-alive the transcript still shows the old cache age, so
@@ -398,6 +418,7 @@ async function cmdRecord(a) {
   if (action === 'keepalive') st.pings += 1;
   if (action === 'handoff-context') { st.contextHandoffFired = true; st.handoffFired = true; }
   if (action === 'handoff-idle') { st.handoffFired = true; st.loopRunning = false; }
+  if (action.startsWith('handoff-')) st.handoffAt = Date.now();
   if (action === 'handoff-usage') {
     // Once per 5h window: the next window's 98% fires again. No window known (no
     // usage data) still latches, until the next session.
