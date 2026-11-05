@@ -51,7 +51,8 @@ Third-party marketplace auto-update is off by default. Run
 
 - Safety rules: one context handoff per session; it **never** spends a keep-alive or starts
   a handoff on an already-expired cache (it waits for your own next prompt); it waits while
-  a background agent or background shell is still running; a brand-new tab with no
+  a background agent or background shell is still running; after a handoff it sends no
+  keep-alive or second handoff until you type again; a brand-new tab with no
   transcript yet is never read as some other session.
 - `/monitor-off` stops it for the current session only; `/monitor-on` restarts it. In
   surfaces that don't list mod commands, write the session id into
