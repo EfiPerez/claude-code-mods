@@ -1,6 +1,6 @@
 {
   "name": "cache-monitor",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Keeps the 1-hour prompt cache warm while you step away and asks Claude to write a /handoff before a session gets too big: at 35-40% context, after ~2 hours idle, or near the 5-hour usage limit. Zero-token checks on a timer; needs Node.js and a /handoff skill.",
   "author": { "name": "Efi Perez" },
   "license": "MIT"
