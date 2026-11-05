@@ -23,6 +23,8 @@ let armed = false    // monitor.js state says loopRunning for this session
 let turnRunning = false
 let inPanel = false
 let handoffTurnId = ''
+let currentTurnId = '' // the main loop's running turn, from turn.start
+const ttlToasted = new Set<string>() // sessions already told they run on the 5-minute cache (A -> B -> A stays one)
 // When this session's last keep-alive fork was answered. The fork re-warms the cache but never
 // lands in the transcript, so monitor.js still reports the cache as expired an hour after the
 // user's last turn; without this the idle handoff was blocked right after a keep-alive.
@@ -122,19 +124,56 @@ async function submitHandoff($: EngineInterface, why: string, gen: number): Prom
   } catch (err) { lastDrop = String(err); return false }
 }
 
-const HANDOFF = (why: string) =>
-  `${HANDOFF_TAG} ${why} Run the handoff skill now to save this session's state ` +
-  '(/handoff; installed from a marketplace it is listed as session-handoff:handoff). ' +
-  'Then post a short plain-English note: which trigger fired, ' +
+const HANDOFF_TAIL = 'Then post a short plain-English note: which trigger fired, ' +
   'the handoff file path, the current context %, and that /resume-handoff picks it up. ' +
   'Do not start a /loop or record monitor actions: the cache-monitor mod already did.'
+const HANDOFF = (why: string) =>
+  `${HANDOFF_TAG} ${why} Run the handoff skill now to save this session's state ` +
+  `(/handoff; installed from a marketplace it is listed as session-handoff:handoff). ${HANDOFF_TAIL}`
+const HANDOFF_IN_TURN = (why: string) =>
+  `${HANDOFF_TAG} ${why} Finish only the step you are on, then run the handoff skill now (/handoff; installed from a marketplace it is listed as session-handoff:handoff), ` +
+  `before any other work in this task, to save this session's state. ${HANDOFF_TAIL}`
+
+// The 99% usage handoff while a turn runs. $.prompt.submit queues until the turn ends: 3, 8
+// and 16.5 min late in three chats (04/11/2026), long enough for the limit to cut the chat
+// off first. A user-role row appended with $.session.append is read at the model's next step
+// inside the running turn (probe 05/11/2026; a self-addressed $.session.send was refused:
+// "no live session"). If that turn ends without /handoff's Step 0 `record stop`, the queued
+// prompt goes out after all. The appended row is isMeta, so it never counts as typed.
+let inTurn: { turnId: string; why: string; gen: number } | null = null
+// The main-loop turn in which a `record stop` was last seen: kept per turn, not on inTurn,
+// so a stop that ran before or while the row was appended still counts.
+let stopTurnId = ''
+async function deliverIntoTurn($: EngineInterface, why: string, gen: number): Promise<boolean> {
+  const turnId = currentTurnId
+  inTurn = null
+  if (gen !== generation) { lastDrop = 'session changed during the check'; return false }
+  try {
+    const r = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text: HANDOFF_IN_TURN(why) }] } })
+    if (r && typeof (r as { deny?: unknown }).deny === 'string') return submitHandoff($, why, gen)
+  } catch { return submitHandoff($, why, gen) }
+  if (gen !== generation) return false
+  // The turn ended while the row was being added: nobody will read it until the next prompt.
+  if (!turnRunning || currentTurnId !== turnId) return submitHandoff($, why, gen)
+  inTurn = { turnId, why, gen }
+  handoffTurnId = turnId // the panel's done sound then plays when this turn ends
+  return true
+}
+async function afterHandoffTurn($: EngineInterface, p: { why: string; gen: number }) {
+  if (!(await submitHandoff($, p.why, p.gen)) && p.gen === generation) {
+    await record($, 'noop', `in-turn usage handoff not run; queued prompt not accepted: ${lastDrop}`)
+  }
+}
 
 type Status = {
-  ok: boolean; project: string; contextPct: number; cacheExpired?: boolean
+  ok: boolean; project: string; contextPct: number; cacheExpired?: boolean; cacheTtl?: string
   fiveHourUsage?: { pct: number | null }
   state: { loopRunning: boolean }
-  recommend: { action: string; nextMin: number | null; why: string }
+  recommend: { action: string; nextMin: number | null; why: string; urgency?: string }
 }
+
+const TTL_TOAST = 'cache-monitor: this chat\'s prompt cache lasts 5 minutes, so cache keep-alives and the idle handoff are off. ' +
+  'Add "promptCacheTtl": "1h" to settings.json; new chats then keep the 1-hour cache.'
 
 async function check($: EngineInterface): Promise<number> {
   // A check belongs to the session it started in: if /clear or a resume switches sessions while
@@ -147,6 +186,11 @@ async function check($: EngineInterface): Promise<number> {
   const s = JSON.parse(r.stdout) as Status
   slug = s.project
   if (await isOff($)) { paused = true; return RETRY_MIN }
+  // Once per chat (05/11/2026). The log gets it too, from the noop note below.
+  if (s.cacheTtl === '5m' && !ttlToasted.has(sid)) {
+    ttlToasted.add(sid)
+    try { $.ui.toast(TTL_TOAST) } catch { /* no surface: the log still says it */ }
+  }
   const { action, nextMin } = s.recommend
   // Never start a turn or a fork on a cold cache: it re-writes the whole conversation at
   // full price in a chat nobody is using. Wait for the user's own next prompt.
@@ -190,8 +234,10 @@ async function check($: EngineInterface): Promise<number> {
       const why = action === 'handoff-usage'
         ? `The 5-hour usage limit is at ${s.fiveHourUsage?.pct}%, the last point before it cuts the session off.`
         : `The 5-hour usage limit is at ${s.fiveHourUsage?.pct}% and the current task has finished.`
-      if (!(await submitHandoff($, why, gen))) { if (gen === generation) await rec('noop', `handoff prompt not accepted: ${lastDrop}`); return RETRY_MIN }
-      await rec('handoff-usage')
+      const now = action === 'handoff-usage' && turnRunning && !!currentTurnId
+      const sent = now ? await deliverIntoTurn($, why, gen) : await submitHandoff($, why, gen)
+      if (!sent) { if (gen === generation) await rec('noop', `handoff prompt not accepted: ${lastDrop}`); return RETRY_MIN }
+      await rec('handoff-usage', now && inTurn && inTurn.gen === gen ? 'delivered into the running turn' : undefined)
       break
     }
     case 'handoff-idle':
@@ -202,7 +248,7 @@ async function check($: EngineInterface): Promise<number> {
       if (gen === generation) paused = true
       break
     default:
-      await rec('noop')
+      await rec('noop', s.recommend.urgency === 'ttl-5m' ? 'cache TTL is 5 min: keep-alive and idle handoff off' : undefined)
   }
   return nextMin ?? RETRY_MIN
 }
@@ -218,6 +264,9 @@ async function syncSession($: EngineInterface) {
   paused = false
   armed = false
   handoffTurnId = ''
+  currentTurnId = ''
+  inTurn = null
+  stopTurnId = ''
   turnRunning = false // a turn left open in the old session must not defer the new one's handoff
   lastKeepaliveAt = 0
   shells.clear()
@@ -272,6 +321,7 @@ export const register: Register = on => {
   on('turn.start', ($, e, next) => {
     if (!(e as { agentId?: string }).agentId) {
       turnRunning = true
+      currentTurnId = e.turnId
       if (e.text.startsWith(HANDOFF_TAG)) handoffTurnId = e.turnId
     }
     return next(e)
@@ -279,7 +329,13 @@ export const register: Register = on => {
   on('turn.complete', ($, e, next) => {
     if (!(e as { agentId?: string }).agentId) {
       turnRunning = false
-      if (handoffTurnId && e.turnId === handoffTurnId) {
+      const p = inTurn && inTurn.turnId === e.turnId ? inTurn : null
+      if (p) inTurn = null
+      if (p && stopTurnId !== e.turnId) {
+        // The in-turn handoff was not run: send the queued prompt now; its own turn plays the sound.
+        if (handoffTurnId === e.turnId) handoffTurnId = ''
+        void afterHandoffTurn($, p)
+      } else if (handoffTurnId && e.turnId === handoffTurnId) {
         handoffTurnId = ''
         if (inPanel) void playSound($)
       }
@@ -293,7 +349,10 @@ export const register: Register = on => {
     on('tool.call', { tool }, async ($, e, next) => {
       const ran = await next(e)
       const c = String((e as { command?: unknown }).command ?? '')
-      if (/monitor\.js/.test(c) && /--action\s+stop\b/.test(c)) armed = false
+      if (/monitor\.js/.test(c) && /--action\s+stop\b/.test(c)) {
+        armed = false
+        if (!e.agentId && turnRunning) stopTurnId = currentTurnId
+      }
       const task = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
       if (!e.agentId && typeof task === 'string' && task) shells.set(task, { use: e.tool_use_id, ts: await $.clock.now() })
       return ran
