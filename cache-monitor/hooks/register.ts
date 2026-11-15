@@ -31,6 +31,9 @@ const ttlToasted = new Set<string>() // sessions already told they run on the 5-
 let lastKeepaliveAt = 0
 let generation = 0 // bumped on every session change; a check started earlier is discarded
 const KEEPALIVE_WARM_MS = 55 * 60_000 // 1-hour TTL minus a margin
+// Re-fork during background work once the last keep-alive is this old: with 5-min rechecks
+// the fork lands 45-50 min after the previous one, inside KEEPALIVE_WARM_MS.
+const BG_KEEPALIVE_EVERY_MS = 45 * 60_000
 
 // Between turns Claude can still be working: it waits on background agents or shells, and
 // their completion notices wake the chat. The transcript is quiet meanwhile, so monitor.js
@@ -39,13 +42,39 @@ const KEEPALIVE_WARM_MS = 55 * 60_000 // 1-hour TTL minus a margin
 // names both ids. Not turnRunning: a turn held open on a question to the user must still go idle.
 const shells = new Map<string, { use: string; ts: number }>()
 const SHELL_STALE_MS = 3 * 60 * 60_000 // a lost completion notice must not block idle forever
+// A finished shell whose notice cannot arrive (it waits behind an open question dialog) would
+// count as running for hours and block the idle handoff. The harness ends the shell's output
+// file, <TEMP>/claude/<hash>/<session>/tasks/<task>.output, with "[exited with code N]".
+// Undocumented, so SHELL_STALE_MS stays as the fallback.
+const EXITED_RE = /\[exited with code -?\d+\]\s*$/
+const OUTPUT_MAX_BYTES = 4 * 1024 * 1024 // $.fs.read rejects past 4 MiB
+let tasksDir = '' // this session's tasks folder once found; '' = not found yet
+async function shellExited($: EngineInterface, task: string): Promise<boolean> {
+  try {
+    if (!tasksDir) {
+      const base = localDir(await $.env.get('TEMP'))
+      if (!base || !sessionId) return false
+      for (const d of await $.fs.list(`${base}/claude`)) {
+        if (d.kind !== 'dir') continue
+        const dir = `${base}/claude/${d.name}/${sessionId}/tasks`
+        if (await $.fs.exists(`${dir}/${task}.output`)) { tasksDir = dir; break }
+      }
+      if (!tasksDir) return false
+    }
+    const file = `${tasksDir}/${task}.output`
+    if (!(await $.fs.exists(file)) || (await $.fs.stat(file)).size > OUTPUT_MAX_BYTES) return false
+    return EXITED_RE.test(String(await $.fs.read(file)))
+  } catch { return false }
+}
 async function backgroundWork($: EngineInterface): Promise<string> {
   try {
     const agents = await $.agent.list()
     if (agents.some(a => !a.parentId && ['pending', 'running', 'waiting'].includes(a.status))) return 'background agent running'
   } catch { /* no agent list: fall through to shells */ }
   const now = await $.clock.now()
-  for (const [task, info] of shells) if (now - info.ts > SHELL_STALE_MS) shells.delete(task)
+  for (const [task, info] of [...shells]) {
+    if (now - info.ts > SHELL_STALE_MS || (await shellExited($, task))) shells.delete(task)
+  }
   return shells.size ? 'background shell running' : ''
 }
 // Ids read whole from the notice's own tags: a substring test would let "review-task-extended"
@@ -89,6 +118,88 @@ async function pruneSent($: EngineInterface) {
 
 // monitor.js ships inside this mod; its state and log files go to <configDir>/cache-timer/.
 const monitorPath = ($: EngineInterface) => `${$.plugin.root.replace(/\\/g, '/')}/lib/monitor.js`
+
+// Keep Windows out of Modern Standby while this chat still has something to protect: a sleeping
+// PC freezes the 60 s timer, the cache expires unseen, and on wake the cold-cache rule skips the
+// keep-alive. lib/keep-awake.ps1 holds ES_SYSTEM_REQUIRED only (the screen still turns off and
+// locks) and lets go on battery below 30%. Held while the monitor is armed and on and the idle
+// handoff has not fired yet (it sets `paused`), idle chats included, and the person typed
+// within the last AWAKE_CAP_MS: holding only during turns let the PC sleep, and the idle
+// handoff was then written on wake onto a cold cache. $.process.spawn ties the helper to the read loop: leaving it, or
+// the module unloading, kills the helper, so a crashed chat cannot keep the PC awake.
+// Windows only; on other systems this does nothing.
+const keepAwakePath = ($: EngineInterface) => `${$.plugin.root.replace(/\\/g, '/')}/lib/keep-awake.ps1`
+// Windows: child processes start by full path and in the mod's own folder. A bare name is
+// looked up in the working directory first, which defaults to the chat's project: a
+// powershell.exe or node.exe planted in a cloned repo would run instead. Env values can come
+// from a project's settings, so only a plain local-drive path is accepted; anything else
+// fails closed (no keep-awake helper; node falls back to its bare name in the mod's folder).
+let systemRoot = '' // set at session start; '' = no trusted Windows folder, so no helper
+let nodeExe = 'node' // Windows: node.exe from the first absolute PATH folder holding one
+const powershellPath = () => `${systemRoot}/System32/WindowsPowerShell/v1.0/powershell.exe`
+const trustedCwd = ($: EngineInterface) => $.plugin.root.replace(/\\/g, '/')
+// A local drive path (X:/...), forward slashes, no '..' segment, no UNC; else ''. Not
+// trimmed: a value with a leading space is not a drive path, so it fails closed. A drive
+// root (X:/) comes back as X: so callers can append '/...'; a bare X: (drive-relative) fails.
+function localDir(value: string | undefined): string {
+  const raw = (value ?? '').replace(/\\/g, '/')
+  return /^[A-Za-z]:\//.test(raw) && !raw.split('/').includes('..') ? raw.replace(/\/+$/, '') : ''
+}
+async function resolveNode($: EngineInterface): Promise<string> {
+  // PATH only when Path is unset: an empty Path is a value, not a reason to look elsewhere.
+  const path = (await $.env.get('Path')) ?? (await $.env.get('PATH')) ?? ''
+  for (const entry of path.split(';')) {
+    const dir = localDir(entry)
+    try { if (dir && (await $.fs.exists(`${dir}/node.exe`))) return `${dir}/node.exe` } catch { /* next */ }
+  }
+  return 'node' // not found: the bare name, still run from the mod's folder
+}
+const AWAKE_CAP_MS = 135 * 60_000 // past the ~2 h idle handoff, with margin
+const AWAKE_RETRY_MS = 10 * 60_000 // after a helper that would not start or died at once
+let isWindows = false
+let lastPersonAt = 0 // the person's last own prompt in this session (session start until then)
+let wantAwake = false
+let awakeRun = 0 // the live helper loop's id; 0 = none
+let awakeSeq = 0
+let awakeFailedAt = 0
+// A `record stop` (e.g. from a handoff skill) ends keep-awake until the person's next own
+// prompt, even though the next check records `start` again and re-arms the monitor itself:
+// the handoff is written, so there is nothing left to stay awake for.
+let stoppedSincePerson = false
+async function shouldStayAwake($: EngineInterface): Promise<boolean> {
+  if (!isWindows || !systemRoot || !sessionId || paused || !armed || stoppedSincePerson) return false
+  if ((await $.clock.now()) - lastPersonAt >= AWAKE_CAP_MS) return false
+  return !(await isOff($))
+}
+async function syncAwake($: EngineInterface) {
+  try { wantAwake = await shouldStayAwake($) } catch { wantAwake = false }
+  if (!wantAwake || awakeRun) return
+  const now = await $.clock.now()
+  if (awakeFailedAt && now - awakeFailedAt < AWAKE_RETRY_MS) return
+  const run = ++awakeSeq
+  awakeRun = run
+  const startedAt = now
+  void (async () => {
+    let lines = 0
+    try {
+      const helper = $.process.spawn({ argv: [powershellPath(), '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', keepAwakePath($)], cwd: trustedCwd($) })
+      for await (const piece of helper) {
+        if ('text' in piece && piece.stream === 'stdout') lines++
+        if (!wantAwake || awakeRun !== run) break // leaving the loop kills the helper
+      }
+    } catch { /* could not start: retried after AWAKE_RETRY_MS */ }
+    finally {
+      if (awakeRun === run) {
+        awakeRun = 0
+        // Ended on its own while still wanted: missing script, blocked PowerShell, or its cap.
+        // Guarded: after the module unloads $ refuses every call, and that must not escape.
+        try {
+          if (wantAwake && (lines === 0 || (await $.clock.now()) - startedAt < 60_000)) awakeFailedAt = await $.clock.now()
+        } catch { /* module gone: nothing left to schedule */ }
+      }
+    }
+  })()
+}
 // Off for this session only: one file per session, holding that session's id while it is off,
 // so a second chat in the same project turning itself off cannot clear the first one's switch.
 const offMarker = () => `${configDir}/cache-timer/${slug}.${sessionId}.off`
@@ -98,7 +209,8 @@ async function isOff($: EngineInterface) {
 }
 
 async function monitor($: EngineInterface, args: string[], sid = sessionId) {
-  return $.process.run(['node', monitorPath($), ...args, '--project', root], {
+  return $.process.run([nodeExe, monitorPath($), ...args, '--project', root], {
+    cwd: trustedCwd($),
     env: { CLAUDE_CODE_SESSION_ID: sid, CLAUDE_CONFIG_DIR: configDir },
     timeoutMs: 20_000,
   })
@@ -159,6 +271,13 @@ async function deliverIntoTurn($: EngineInterface, why: string, gen: number): Pr
   handoffTurnId = turnId // the panel's done sound then plays when this turn ends
   return true
 }
+// Claude's own main-loop question, while its dialog waits. A queued $.prompt.submit waits for
+// the dialog to close, so an idle handoff would run only when the person comes back. When the
+// idle handoff falls due while a question is open, the handoff is delivered into the running
+// turn and the question's call is ended with a refusal, so the turn goes on to run the handoff.
+let openQuestion: { close: () => void; gen: number } | null = null
+const QUESTION_CLOSED = 'No answer: the user is away, and the cache-monitor idle handoff is due. ' +
+  'Do not ask again now; follow the cache-monitor instruction that comes next.'
 async function afterHandoffTurn($: EngineInterface, p: { why: string; gen: number }) {
   if (!(await submitHandoff($, p.why, p.gen)) && p.gen === generation) {
     await record($, 'noop', `in-turn usage handoff not run; queued prompt not accepted: ${lastDrop}`)
@@ -203,7 +322,20 @@ async function check($: EngineInterface): Promise<number> {
   if (!s.state.loopRunning) await rec('start', 'cache-monitor mod')
   if (action === 'keepalive' || action === 'handoff-idle') {
     const working = await backgroundWork($)
-    if (working) { await rec('noop', `${action} deferred: ${working}`); return RETRY_MIN }
+    if (working) {
+      // Keep the cache warm while Claude waits on background work, but never hand off
+      // (a 5-hour background test run once let a 15%-context chat go cold). Recorded as
+      // noop so it does not spend the idle path's one keep-alive (pings).
+      const now = await $.clock.now()
+      if (lastKeepaliveAt > 0 && now - lastKeepaliveAt < BG_KEEPALIVE_EVERY_MS) {
+        await rec('noop', `${action} deferred: ${working}`); return RETRY_MIN
+      }
+      const f = await $.model.fork({ prompt: 'Cache keep-alive from the cache-monitor mod. Reply with only: OK' })
+      if (gen !== generation) return RETRY_MIN
+      if (f.isAnswered) lastKeepaliveAt = await $.clock.now()
+      await rec('noop', f.isAnswered ? `background keep-alive (${action} deferred: ${working})` : `keep-alive fork failed: ${f.reason}`)
+      return RETRY_MIN
+    }
   }
   if (gen !== generation) return RETRY_MIN
   switch (action) {
@@ -240,13 +372,19 @@ async function check($: EngineInterface): Promise<number> {
       await rec('handoff-usage', now && inTurn && inTurn.gen === gen ? 'delivered into the running turn' : undefined)
       break
     }
-    case 'handoff-idle':
-      if (!(await submitHandoff($, 'The session has been idle past the cache keep-alive.', gen))) {
+    case 'handoff-idle': {
+      const idleWhy = 'The session has been idle past the cache keep-alive.'
+      const q = openQuestion && openQuestion.gen === gen && turnRunning && currentTurnId ? openQuestion : null
+      const sent = q ? await deliverIntoTurn($, idleWhy, gen) : await submitHandoff($, idleWhy, gen)
+      if (!sent) {
         if (gen === generation) await rec('noop', `handoff prompt not accepted: ${lastDrop}`); return RETRY_MIN
       }
-      await rec('handoff-idle')
+      // After the delivery: the turn then reads the refusal and the handoff row at one step.
+      if (q) { q.close(); if (openQuestion === q) openQuestion = null }
+      await rec('handoff-idle', q ? 'open question closed; handoff delivered into the running turn' : undefined)
       if (gen === generation) paused = true
       break
+    }
     default:
       await rec('noop', s.recommend.urgency === 'ttl-5m' ? 'cache TTL is 5 min: keep-alive and idle handoff off' : undefined)
   }
@@ -270,11 +408,17 @@ async function syncSession($: EngineInterface) {
   turnRunning = false // a turn left open in the old session must not defer the new one's handoff
   lastKeepaliveAt = 0
   shells.clear()
+  tasksDir = ''
+  openQuestion = null // a dialog of the old session is never closed from the new one
   nextDueAt = (await $.clock.now()) + 2 * 60_000
+  lastPersonAt = await $.clock.now()
+  stoppedSincePerson = false
+  wantAwake = false // the next tick decides again for the new session
 }
 
 async function tick($: EngineInterface) {
   await syncSession($)
+  await syncAwake($)
   const now = await $.clock.now()
   if (busy || paused || now < nextDueAt) return
   busy = true
@@ -306,19 +450,25 @@ export const register: Register = on => {
     root = await $.session.root()
     sessionId = await $.session.id()
     inPanel = (await $.env.get('CLAUDE_CODE_ENTRYPOINT')) === 'claude-vscode'
+    isWindows = (await $.env.get('OS')) === 'Windows_NT'
+    // The first value set wins; if it is not a plain local-drive path, fail closed ('').
+    systemRoot = localDir((await $.env.get('SystemRoot')) || (await $.env.get('windir'))
+      || `${(await $.env.get('SystemDrive')) || 'C:'}/Windows`)
+    if (isWindows) nodeExe = await resolveNode($)
     nextDueAt = (await $.clock.now()) + 2 * 60_000
+    lastPersonAt = await $.clock.now()
     void pruneSent($)
     $.clock.every(TICK_MS, () => { void tick($) })
     for (const [name, description] of [
       ['monitor-off', 'Stop the cache + context monitor for this session'],
       ['monitor-on', 'Restart the cache + context monitor for this session'],
-    ]) {
+    ] as const) {
       try { await $.command.register({ name, description }) } catch { /* name taken: skip */ }
     }
     return r
   })
 
-  on('turn.start', ($, e, next) => {
+  on('turn.start', (_$, e, next) => {
     if (!(e as { agentId?: string }).agentId) {
       turnRunning = true
       currentTurnId = e.turnId
@@ -346,11 +496,12 @@ export const register: Register = on => {
   // A skill that records `stop` through monitor.js (e.g. a handoff skill ending an old /loop)
   // clears `armed`, so the next prompt re-arms.
   for (const tool of ['Bash', 'PowerShell'] as const) {
-    on('tool.call', { tool }, async ($, e, next) => {
+    on('tool.call', { tool } as { tool: 'Bash' }, async ($, e, next) => {
       const ran = await next(e)
       const c = String((e as { command?: unknown }).command ?? '')
       if (/monitor\.js/.test(c) && /--action\s+stop\b/.test(c)) {
         armed = false
+        stoppedSincePerson = true
         if (!e.agentId && turnRunning) stopTurnId = currentTurnId
       }
       const task = (ran.result as { backgroundTaskId?: unknown } | undefined)?.backgroundTaskId
@@ -358,6 +509,32 @@ export const register: Register = on => {
       return ran
     })
   }
+  // An answered question restarts the keep-awake cap like a typed prompt. Only a call that
+  // came back with at least one answer counts; a rejected, failed or unanswered dialog does not.
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    // Only Claude's own main-loop question can be closed for the idle handoff; another mod's
+    // $.ui.ask (origin.plugin = its name) and a subagent's question are left alone.
+    const mine = !e.agentId && (next.origin as { plugin?: string }).plugin === 'engine'
+    const call = next(e)
+    let ran: Awaited<typeof call>
+    if (mine) {
+      let close = () => {}
+      const due = new Promise<'closed'>(r => { close = () => r('closed') })
+      const q = { close, gen: generation }
+      openQuestion = q
+      try {
+        call.catch(() => { /* abandoned once closed: its later settle must not go unhandled */ })
+        const first = await Promise.race([call, due])
+        if (first === 'closed') return { deny: QUESTION_CLOSED }
+        ran = first
+      } finally { if (openQuestion === q) openQuestion = null }
+    } else ran = await call
+    const answers = (ran.result as { answers?: unknown } | undefined)?.answers
+    const failed = (ran as { isError?: boolean }).isError === true
+    if (!failed && answers && typeof answers === 'object' && Object.keys(answers).length > 0) lastPersonAt = await $.clock.now()
+    return ran
+  })
+
   // Re-arm on the person's next prompt (after an idle handoff, or after a `stop`). This uses
   // prompt.submit rather than classic.UserPromptSubmit, which managed/Team machines skip.
   on('prompt.submit', async ($, e, next) => {
@@ -365,6 +542,7 @@ export const register: Register = on => {
     const origin = e.origin as { kind: string; asUser?: boolean }
     // The engine also queues idle notices and delivery receipts as unclassified + isMeta.
     const machineNotice = origin.kind === 'unclassified' && (e as { isMeta?: boolean }).isMeta === true
+    if (!machineNotice && !notThePerson(origin)) { lastPersonAt = await $.clock.now(); stoppedSincePerson = false }
     if (origin.kind === 'task-notification') shellNotice(String(e.text ?? ''))
     else if (!machineNotice && !notThePerson(origin) && sessionId && (paused || !armed) && !(await isOff($))) {
       paused = false
