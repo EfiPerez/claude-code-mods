@@ -56,10 +56,13 @@ Third-party marketplace auto-update is off by default. Run
   and usage handoffs stay on.
 
 - Safety rules: one context handoff per session; it **never** spends a keep-alive or starts
-  a handoff on an already-expired cache (it waits for your own next prompt); it waits while
-  a background agent or background shell is still running; after a handoff it sends no
+  a handoff on an already-expired cache (it waits for your own next prompt); while a
+  background agent or background shell is still running it never hands off, but sends a
+  keep-alive every 45-50 minutes so the cache stays warm; after a handoff it sends no
   keep-alive or second handoff until you type again; a brand-new tab with no
   transcript yet is never read as some other session.
+- **Windows: keeps the PC awake until the idle handoff is written.** A sleeping PC (Modern Standby) freezes the 60-second timer, so the cache could expire unseen and the idle handoff would run only after wake, on a cold cache. While the monitor is on, including while the chat sits idle waiting for you, the mod runs the bundled `lib/keep-awake.ps1` (Windows PowerShell), which asks Windows to keep the system running. The screen still turns off and locks as usual. It lets go after the idle handoff, after a handoff skill records `stop` (until you type again), after `/monitor-off`, 2 h 15 min after your last message or answer, and on battery below 30%. Expect more battery use while it holds (about 19%/h vs 11-12%/h in standby on one test laptop), so an idle chat can cost up to about 2 hours of that. Closing the lid still sleeps. Other systems: nothing changes.
+- **An open question does not block the idle handoff.** If the idle handoff falls due while Claude's own question waits for your answer, the mod adds the handoff to the running task and ends the question with "no answer, the user is away". Questions from other mods or subagents are left alone.
 - `/monitor-off` stops it for the current session only; `/monitor-on` restarts it. In
   surfaces that don't list mod commands, write the session id into
   `~/.claude/cache-timer/<project-folder-name>.<session-id>.off` instead. After `/clear` or a
