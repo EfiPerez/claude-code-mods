@@ -1,5 +1,16 @@
 # Changelog
 
+## [cache-monitor 1.2.0] - 2026-11-15
+### Added
+- Windows: while the monitor is on, the bundled `lib/keep-awake.ps1` keeps the PC out of sleep so the cache keep-alive and the idle handoff run before the PC sleeps, not on a cold cache after it wakes (the screen still turns off and locks). This includes an idle chat waiting for your next message. It lets go after the idle handoff, after a handoff skill records `stop` (until you type again), after `/monitor-off`, 2 h 15 min after your last message or answered question, and on battery below 30%
+- If the idle handoff falls due while Claude's own question is waiting for your answer, the mod adds the handoff to the running task and ends that question with "no answer, the user is away". Before, the handoff waited until someone closed the question. Questions from other mods or from subagents are left alone
+### Fixed
+- A background shell that has finished no longer counts as running work for up to 3 hours when its completion notice is held back (for example behind an open question): the mod reads the shell's output file for the `[exited with code N]` line. The 3-hour limit stays as a fallback
+### Security
+- Windows: PowerShell and Node.js are started by their full paths (Node.js from the first full-path `PATH` folder that holds `node.exe`), and every child process runs in the mod's own folder. Before, a program named `node.exe` placed in a project folder could run instead of Node.js when a chat was opened in that folder. A Windows folder setting that is not a plain local-drive path switches the keep-awake helper off instead of being trusted
+### Changed
+- While a background agent or background shell is running, the mod now sends a keep-alive every 45-50 minutes instead of letting the cache expire. It still never starts a handoff during background work, and these keep-alives do not use up the one idle keep-alive. Before, a long background task (for example a multi-hour test run) could leave the chat with a cold cache
+
 ## [cache-monitor 1.1.0] - 2026-11-05
 ### Added
 - 5-minute cache detection: when the last 3 cache-writing replies all used the 5-minute tier, the idle keep-alive and idle handoff are off for that chat, and a one-time notice suggests `"promptCacheTtl": "1h"` in `settings.json`. Context and usage handoffs are unchanged
