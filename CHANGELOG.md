@@ -1,5 +1,9 @@
 # Changelog
 
+## [task-progress 1.0.0] - 2026-11-18
+### Added
+- `task-progress` - a live task list for Claude's multi-step work: a line above the prompt in Claude Desktop and the terminal, and a Tasks sidebar for VS Code-family editors installed with `/install-viewer` (detects VS Code, Cursor, Windsurf and VSCodium and asks which to use). The list's heading is the real goal of the work, not the command that started it
+
 ## [cache-monitor 1.2.0] - 2026-11-15
 ### Added
 - Windows: while the monitor is on, the bundled `lib/keep-awake.ps1` keeps the PC out of sleep so the cache keep-alive and the idle handoff run before the PC sleeps, not on a cold cache after it wakes (the screen still turns off and locks). This includes an idle chat waiting for your next message. It lets go after the idle handoff, after a handoff skill records `stop` (until you type again), after `/monitor-off`, 2 h 15 min after your last message or answered question, and on battery below 30%
