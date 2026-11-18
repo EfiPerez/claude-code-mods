@@ -1,0 +1,9 @@
+{
+  "name": "task-progress",
+  "version": "1.0.0",
+  "description": "Shows Claude's task list while it works: a progress line above the prompt in Claude Desktop and the terminal, and an optional Tasks sidebar for VS Code, Cursor, Windsurf or VSCodium (install it with /install-viewer).",
+  "author": {
+    "name": "Efi Perez"
+  },
+  "license": "MIT"
+}
