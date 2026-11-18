@@ -1,5 +1,10 @@
 # Changelog
 
+## [task-progress 1.0.1] - 2026-11-18
+### Security
+- The line above the prompt now replaces control characters (terminal escape codes, line breaks, tabs) in the goal, task and step titles with a space, so a title can no longer inject terminal escape sequences
+- `/install-viewer` now runs every program from the mod's own data folder (`~/.claude/task-progress`), never the project folder, and calls the unpack tools by full system path (`%SystemRoot%\System32\certutil.exe` on Windows, `/bin/sh` and `/usr/bin/base64` elsewhere). Before, a program with the same name placed in a project folder could run instead. A Windows `SystemRoot` that is not a plain local-drive path stops the install with a message
+
 ## [task-progress 1.0.0] - 2026-11-18
 ### Added
 - `task-progress` - a live task list for Claude's multi-step work: a line above the prompt in Claude Desktop and the terminal, and a Tasks sidebar for VS Code-family editors installed with `/install-viewer` (detects VS Code, Cursor, Windsurf and VSCodium and asks which to use). The list's heading is the real goal of the work, not the command that started it
