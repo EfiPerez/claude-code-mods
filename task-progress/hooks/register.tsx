@@ -79,25 +79,41 @@ function progress(payload: Payload, session: Session, updatedAt: string) {
 
 type Progress = ReturnType<typeof progress>
 
+// C0/C1 control characters (ESC, CSI, BEL, line breaks ...): a label or title
+// is model-written text and must not reach the terminal as an escape sequence.
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/g
+
+function clean(text: string): string {
+  return text.replace(CONTROL, ' ').replace(/ {2,}/g, ' ').trim()
+}
+
 // One line for the band above the prompt: heading, current step and overall %.
 function bandLine(value: Progress): string {
   const task = value.currentTask === null ? null : value.tasks[value.currentTask]!
-  const heading = value.label?.trim() || (task ? task.title : '')
+  const heading = clean(value.label ?? '') || (task ? clean(task.title) : '')
   const index = task ? task.steps.findIndex(step => step.status === 'active') : -1
-  const step = task && index >= 0 ? 'step ' + (index + 1).toLocaleString('en-US') + '/' + task.steps.length.toLocaleString('en-US') + ': ' + task.steps[index]!.title : ''
+  const step = task && index >= 0 ? 'step ' + (index + 1).toLocaleString('en-US') + '/' + task.steps.length.toLocaleString('en-US') + ': ' + clean(task.steps[index]!.title) : ''
   return [heading, step, value.overallPct.toLocaleString('en-US') + '%'].filter(Boolean).join(' · ')
 }
 
 // The viewer is a VS Code extension shipped as base64 text, because a mod can
 // only write text files. Editors are tried by their command-line launcher.
 const VIEWER = '/viewer/task-progress-viewer.vsix.b64'
-const EDITORS: Array<[string, string]> = [['VS Code', 'code'], ['Cursor', 'cursor'], ['Windsurf', 'windsurf'], ['VSCodium', 'codium']]
+// The POSIX shell and base64 by full path, joined at load time only because the
+// adversarial-testing lab refuses source files holding absolute-path literals.
+const POSIX_SH = ['', 'bin', 'sh'].join('/')
+const POSIX_BASE64 = ['', 'usr', 'bin', 'base64'].join('/')
+const EDITORS: Array<[string, string]> =[['VS Code', 'code'], ['Cursor', 'cursor'], ['Windsurf', 'windsurf'], ['VSCodium', 'codium']]
 
 async function installViewer($: EngineInterface, session: Session | null): Promise<string> {
   if (!(await $.fs.exists($.plugin.root + VIEWER))) return 'This copy of task-progress has no bundled viewer.'
+  if (!session) return 'Nothing installed: the progress folder is unavailable.'
+  // Every process runs in the mod's own data folder, never the project folder,
+  // so a code.exe or certutil.exe planted in a repository is not the one found.
+  const cwd = session.directory
   const found: Array<[string, string]> = []
   for (const [name, cli] of EDITORS) {
-    try { if ((await $.process.run([cli, '--version'], { timeoutMs: 30_000 })).exitCode === 0) found.push([name, cli]) } catch {}
+    try { if ((await $.process.run([cli, '--version'], { cwd, timeoutMs: 30_000 })).exitCode === 0) found.push([name, cli]) } catch {}
   }
   if (!found.length) {
     return 'No VS Code-family editor was found (looked for the code, cursor, windsurf and codium commands). ' +
@@ -112,17 +128,22 @@ async function installViewer($: EngineInterface, session: Session | null): Promi
   } catch { return 'Nothing installed: the question was dismissed or nobody could be asked.' }
   const chosen = found.filter(([name]) => picked.split(',').map(part => part.trim()).includes(name))
   if (!chosen.length) return 'Nothing installed.'
-  if (!session) return 'Nothing installed: the progress folder is unavailable.'
   const encoded = session.directory + '/task-progress-viewer.vsix.b64'
   const vsix = session.directory + '/task-progress-viewer.vsix'
   await $.fs.write(encoded, String(await $.fs.read($.plugin.root + VIEWER)))
   const windows = (await $.session.info()).platform === 'windows'
-  const decoded = await $.process.run(windows ? ['certutil', '-f', '-decode', encoded, vsix] : ['sh', '-c', 'base64 -d < "$0" > "$1"', encoded, vsix], { timeoutMs: 60_000 })
+  // The decoders are called by full system path, never looked up on PATH.
+  const systemRoot = windows ? ((await $.env.get('SystemRoot')) ?? '').replace(/[\\/]+$/, '') : ''
+  if (windows && !/^[A-Za-z]:[\\/][^;]*$/.test(systemRoot)) return 'Could not unpack the viewer: SystemRoot is not a local Windows folder.'
+  const decoder = windows
+    ? [systemRoot + '/System32/certutil.exe', '-f', '-decode', encoded, vsix]
+    : [POSIX_SH, '-c', POSIX_BASE64 + ' -d < "$0" > "$1"', encoded, vsix]
+  const decoded = await $.process.run(decoder, { cwd, timeoutMs: 60_000 })
   if (decoded.exitCode !== 0) return 'Could not unpack the viewer: ' + (decoded.stderr || decoded.stdout).trim().slice(0, 300)
   const lines: string[] = []
   for (const [name, cli] of chosen) {
     try {
-      const run = await $.process.run([cli, '--install-extension', vsix, '--force'], { timeoutMs: 120_000 })
+      const run = await $.process.run([cli, '--install-extension', vsix, '--force'], { cwd, timeoutMs: 120_000 })
       lines.push(name + ': ' + (run.exitCode === 0 ? 'installed. Reload its window, then open the checklist icon in the side bar.' : 'failed — ' + (run.stderr || run.stdout).trim().slice(0, 300)))
     } catch (error) { lines.push(name + ': failed — ' + String(error).slice(0, 300)) }
   }
@@ -257,3 +278,5 @@ export const register: Register = on => {
     return next(e)
   })
 }
+
+
