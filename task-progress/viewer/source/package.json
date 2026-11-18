@@ -1,0 +1,44 @@
+{
+  "name": "task-progress-viewer",
+  "displayName": "Claude Task Progress",
+  "description": "Sidebar and status bar view of the task lists written by the task-progress Claude Code mod.",
+  "version": "1.0.0",
+  "publisher": "efi-mods",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./progress.js",
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeProgress",
+          "title": "Claude Progress",
+          "icon": "media/progress.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeProgress": [
+        {
+          "type": "webview",
+          "id": "claudeProgress.timeline",
+          "name": "Tasks"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeProgress.focus",
+        "title": "Claude Progress: Focus Tasks"
+      }
+    ]
+  }
+}
