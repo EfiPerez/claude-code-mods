@@ -22,6 +22,7 @@ Then install only the mods you want:
 | `effort-picker` | Sets each request's effort level from the task, not the prompt: Claude picks a level once it understands the work, and helpers get a level per job. | `/plugin install effort-picker@efi-mods` |
 | `plain-language` | Claude's chat replies to you in plain, CEFR-level English (A2 or B1): no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail. | `/plugin install plain-language@efi-mods` |
 | `plan-review` | When you approve a plan in plan mode, saves it to `plans/` and has Claude run the `codec-review` skill on it before any code is written. **Needs `codec-review`** — see below. | `/plugin install plan-review@efi-mods` |
+| `task-progress` | Shows Claude's task list while it works: a progress line above the prompt in Claude Desktop and the terminal, and an optional **Tasks** sidebar for VS Code, Cursor, Windsurf or VSCodium (`/install-viewer`). | `/plugin install task-progress@efi-mods` |
 
 Alternatively download the repo and load a mod locally using
 `claude --plugin-dir <downloaded-repo>/<mod>` on a compatible Claude Code
@@ -178,6 +179,34 @@ Third-party marketplace auto-update is off by default. Run
 - Off switch: start Claude Code with the environment variable `CODEC_REVIEW_ACTIVE` set to any
   value, and the mod does nothing.
 
+## task-progress
+
+- **What you see:** for any work of 3 or more steps, Claude keeps a task list (tasks, each
+  with small steps marked done / active / pending) and updates it as it goes. The list's
+  heading is the real goal of the work, e.g. after resuming a handoff it names the handoff's
+  main task, not "Resume handoff".
+  - **Claude Desktop and the terminal:** one line above the prompt, e.g.
+    `Tasks: Plan the garden · step 1/2: List sun spots · 0%`. It disappears when every step
+    is done. Nothing to install.
+  - **VS Code, Cursor, Windsurf or VSCodium:** run `/install-viewer` once. It checks which of
+    these editors are installed (by their `code`, `cursor`, `windsurf` and `codium`
+    commands), asks which to install into, and installs the bundled **Claude Task Progress**
+    extension with the editor's own `--install-extension`. Reload the editor window, then
+    open the checklist icon in the side bar: every open chat's list, its percentage, and a
+    status-bar item for the active one. In the VS Code chat panel the line above the prompt
+    stays off, since the sidebar shows the same thing.
+- **How it works:** the mod gives Claude a `report_progress` tool and one short instruction
+  on each prompt. Each call saves the whole list to
+  `~/.claude/task-progress/<session-id>.json`; a small `<session-id>.alive` heartbeat file
+  (every 60 s) tells the viewer which chats are still open. The viewer only reads these
+  files and your chat titles; it sends nothing anywhere.
+- **The viewer package:** `viewer/task-progress-viewer.vsix.b64` is the extension in base64
+  text (a mod can only write text files). `/install-viewer` turns it back into a `.vsix`
+  with `certutil` (Windows) or `base64` (macOS/Linux). Its readable source is in
+  `viewer/source/`; you can also install it by hand. Tested on Windows with VS Code; not
+  tested on macOS, Linux, Cursor, Windsurf or VSCodium.
+- Subagents can't report progress; only the main chat's list is shown.
+
 ## Prerequisites and supported surfaces
 
 - Requires Claude Code with the mods/hooks engine.
@@ -186,7 +215,7 @@ Third-party marketplace auto-update is off by default. Run
   `prompt.section`, `prompt.context`, `prompt.compose`, `skill.prompt`,
   `attribution.text` and `settings.read`. There is no user-side switch;
   an administrator must manage the plugin to lift it.
-  - `cache-monitor`, `effort-picker` and `plan-review` use none of those events.
+  - `cache-monitor`, `effort-picker`, `plan-review` and `task-progress` use none of those events.
   - `plain-language` loses its system-prompt section there and falls back to
     the first-prompt context path described above. The rules then reach the
     model as part of the first message's context rather than the system
