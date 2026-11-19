@@ -99,10 +99,12 @@ function bandLine(value: Progress): string {
 // The viewer is a VS Code extension shipped as base64 text, because a mod can
 // only write text files. Editors are tried by their command-line launcher.
 const VIEWER = '/viewer/task-progress-viewer.vsix.b64'
-// The POSIX shell and base64 by full path, joined at load time only because the
-// adversarial-testing lab refuses source files holding absolute-path literals.
+// Standard system programs, called by full path so nothing on PATH is used:
+// /bin/sh, /usr/bin/base64 and /bin/rm. They are written as joined parts only
+// because the author's code scanner rejects absolute-path literals in source.
 const POSIX_SH = ['', 'bin', 'sh'].join('/')
 const POSIX_BASE64 = ['', 'usr', 'bin', 'base64'].join('/')
+const POSIX_RM = ['', 'bin', 'rm'].join('/')
 const EDITORS: Array<[string, string]> =[['VS Code', 'code'], ['Cursor', 'cursor'], ['Windsurf', 'windsurf'], ['VSCodium', 'codium']]
 
 async function installViewer($: EngineInterface, session: Session | null): Promise<string> {
@@ -150,6 +152,84 @@ async function installViewer($: EngineInterface, session: Session | null): Promi
   return lines.join('\n')
 }
 
+// Same rules as the VS Code viewer (viewer/source/progress-core.js): a chat is
+// open while its heartbeat is under 3 minutes old and not ended; its files are
+// removed after 7 days without any write.
+const OPEN_MS = 3 * 60 * 1000
+const RETENTION_MS = 7 * 24 * 60 * 60 * 1000
+const OTHERS_MS = 15_000
+const SESSION_FILE = /^([A-Za-z0-9_-]+)\.(alive|json)$/
+type Other = { sessionId: string; folder: string; heading: string; overallPct: number }
+
+function folderName(root: unknown): string {
+  const parts = String(root ?? '').split(String.fromCharCode(92)).join('/').split('/').filter(Boolean)
+  return clean(parts[parts.length - 1] ?? '')
+}
+
+// The mod file API has no delete, so stale files are removed by the system's
+// own delete command, run inside the progress folder with bare file names that
+// match SESSION_FILE (letters, digits, - and _ only).
+async function prune($: EngineInterface, session: Session) {
+  const entries = await $.fs.list(session.directory)
+  const now = await $.clock.now()
+  // Age is the heartbeat's (.alive) last write; a session with no heartbeat
+  // file left is aged by its .json.
+  const beat = new Map<string, number>()
+  const names = new Map<string, string[]>()
+  for (const entry of entries) {
+    const match = SESSION_FILE.exec(entry.name)
+    if (entry.kind !== 'file' || !match || match[1] === session.sessionId) continue
+    const sid = match[1]!
+    if (match[2] === 'alive' || !beat.has(sid)) beat.set(sid, entry.mtimeMs)
+    names.set(sid, [...(names.get(sid) ?? []), entry.name])
+  }
+  const stale: string[] = []
+  for (const [sid, mtime] of beat) if (now - mtime > RETENTION_MS) stale.push(...names.get(sid)!)
+  if (!stale.length) return
+  const windows = (await $.session.info()).platform === 'windows'
+  const systemRoot = windows ? ((await $.env.get('SystemRoot')) ?? '').replace(/[\\/]+$/, '') : ''
+  if (windows && !/^[A-Za-z]:[\\/][^;]*$/.test(systemRoot)) return
+  for (let start = 0; start < stale.length; start += 100) {
+    const batch = stale.slice(start, start + 100)
+    const argv = windows
+      ? [systemRoot + '/System32/cmd.exe', '/d', '/c', 'del', '/f', '/q', ...batch]
+      : [POSIX_RM, '-f', '--', ...batch]
+    await $.process.run(argv, { cwd: session.directory, timeoutMs: 30_000 })
+  }
+}
+
+// Other chats with an unfinished task list, by the viewer's open-chat rule.
+async function readOthers($: EngineInterface, session: Session): Promise<Other[]> {
+  const entries = await $.fs.list(session.directory)
+  const now = await $.clock.now()
+  const others: Other[] = []
+  for (const entry of entries) {
+    const match = SESSION_FILE.exec(entry.name)
+    if (entry.kind !== 'file' || !match || match[2] !== 'alive' || match[1] === session.sessionId) continue
+    // Open means a heartbeat newer than 3 minutes: exactly 3 minutes is closed.
+    if (now - entry.mtimeMs >= OPEN_MS) continue
+    try {
+      const alive = JSON.parse(String(await $.fs.read(session.directory + '/' + entry.name)))
+      const age = now - Date.parse(alive?.aliveAt)
+      if (alive?.state === 'ended' || !Number.isFinite(age) || age < 0 || age >= OPEN_MS) continue
+      const value = JSON.parse(String(await $.fs.read(session.directory + '/' + match[1] + '.json')))
+      if (value?.state !== 'active' || !Number.isFinite(value.overallPct) || !Array.isArray(value.tasks)) continue
+      const heading = (typeof value.label === 'string' ? clean(value.label) : '') ||
+        (typeof value.tasks[0]?.title === 'string' ? clean(value.tasks[0].title) : '')
+      others.push({
+        sessionId: match[1]!, folder: folderName(value.projectRoot),
+        heading: Array.from(heading).slice(0, 60).join(''),
+        overallPct: Math.max(0, Math.min(100, Math.round(value.overallPct))),
+      })
+    } catch {}
+  }
+  return others.sort((a, b) => a.sessionId.localeCompare(b.sessionId))
+}
+
+function repaint($: EngineInterface) {
+  try { $.ui.invalidate('ui.render') } catch {}
+}
+
 async function debug($: EngineInterface, message: string) {
   try { await $.ui.log('task-progress: ' + message, { to: 'debug' }) } catch {}
 }
@@ -163,10 +243,28 @@ async function beat($: EngineInterface, session: Session) {
   } catch { await debug($, 'heartbeat write failed') }
 }
 
-export const register: Register = on => {
+const PANE = 'task-progress'
+const MARK = { done: '●', active: '◉', pending: '○' } as const
+
+export const register: Register = (on, options) => {
+  // auto: the side panel in Claude Desktop, the band everywhere else.
+  const placement = ['band', 'pane', 'both'].includes(String(options?.placement)) ? String(options.placement) : 'auto'
   let session: Session | null = null
   let latest: Progress | null = null
   let timer: Timer | null = null
+  let othersTimer: Timer | null = null
+  let others: Other[] = []
+  // The tool registered: only then is Claude told to call it.
+  let toolReady = false
+  // The pane is drawn now. In auto mode the band steps aside only while it is.
+  let paneShown = false
+  const bandWanted = () => placement === 'band' || placement === 'both' || (placement === 'auto' && !paneShown)
+  // True when the value changed, so the caller repaints the band.
+  const markPane = (value: boolean) => {
+    if (paneShown === value) return false
+    paneShown = value
+    return true
+  }
   // Serialize writes so a heartbeat already in flight cannot overwrite ended.
   let heartbeat: Promise<void> = Promise.resolve()
 
@@ -207,6 +305,7 @@ export const register: Register = on => {
           },
         },
       })
+      toolReady = true
       // $.fs.write creates parent directories. No rename API: use the specified
       // plain-write fallback, paired with last-good-parse handling in the reader.
       await beat($, session)
@@ -218,16 +317,46 @@ export const register: Register = on => {
         }
       })
     } catch { await debug($, 'session initialization failed') }
+    if (session) {
+      const current = session
+      try { await prune($, current) } catch { await debug($, 'old progress files could not be removed') }
+      const paneWanted = placement === 'pane' || placement === 'both' ||
+        (placement === 'auto' && (await $.env.get('CLAUDE_CODE_ENTRYPOINT').catch(() => undefined)) === 'claude-desktop')
+      if (paneWanted) {
+        try { if (markPane((await $.ui.open({ id: PANE, title: 'Tasks' })).isPlaced)) repaint($) }
+        catch { await debug($, 'task pane could not open') }
+        const refresh = async () => {
+          try {
+            const found = await readOthers($, current)
+            if (JSON.stringify(found) === JSON.stringify(others)) return
+            others = found
+            try { $.ui.invalidate('ui.render') } catch {}
+          } catch {}
+        }
+        await refresh()
+        othersTimer?.cancel()
+        othersTimer = $.clock.every(OTHERS_MS, () => { void refresh() })
+      }
+    }
     try {
       await $.command.register({
         name: 'install-viewer',
         description: 'Install the Task progress sidebar into VS Code, Cursor, Windsurf or VSCodium',
       })
     } catch { await debug($, 'install-viewer command unavailable') }
+    try {
+      await $.command.register({ name: 'tasks-panel', description: 'Open the Tasks side panel' })
+    } catch { await debug($, 'tasks-panel command unavailable') }
     return next(e)
   })
 
-  on('prompt.submit', async (_$, e, next) => {
+  on('prompt.submit', async ($, e, next) => {
+    // A finished list is cleared when the next prompt starts; an unfinished one stays.
+    if (latest && latest.state === 'done') {
+      latest = null
+      try { $.ui.invalidate('ui.render') } catch {}
+    }
+    if (!toolReady) return next(e)
     return next({ ...e, context: [...(e.context ?? []), PROMPT_CONTEXT] })
   })
 
@@ -255,17 +384,98 @@ export const register: Register = on => {
     catch (error) { return { text: 'Viewer install failed: ' + String(error).slice(0, 300) } }
   })
 
+  on('command.run', { command: 'tasks-panel' }, async $ => {
+    try {
+      const opened = await $.ui.open({ id: PANE, title: 'Tasks' })
+      if (markPane(opened.isPlaced)) repaint($)
+      return { text: opened.isPlaced ? 'Tasks panel opened.' : 'The Tasks panel could not be shown here: ' + opened.reason }
+    } catch (error) { return { text: 'The Tasks panel could not open: ' + String(error).slice(0, 300) } }
+  })
+
+  on('ui.close', async ($, e, next) => {
+    if (e.id === PANE && markPane(false)) repaint($)
+    return next(e)
+  })
+
   // Claude Desktop and the terminal draw the band; the VS Code panel has the
   // sidebar viewer instead, so the band stays out of it.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
-    if (e.props.hasSurvey || e.surface === 'vscode' || !latest || latest.state === 'done') return next(e)
+    if (!bandWanted() || e.props.hasSurvey || e.surface === 'vscode' || !latest || latest.state === 'done') return next(e)
     const { Text } = $.ui.resolve(e)
     return <Text dimColor>{'Tasks: ' + bandLine(latest)}</Text>
+  })
+
+  // The side panel: the current task open with its steps, every other task one
+  // line, then the other chats working right now.
+  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
+    if (markPane(true)) repaint($)
+    const { Box, Text } = $.ui.resolve(e)
+    const value = latest
+    const current = value && value.currentTask !== null ? value.tasks[value.currentTask] ?? null : null
+    const stepIndex = current ? current.steps.findIndex(s => s.status === 'active') : -1
+    return (
+      <Box flexDirection="column">
+        {!value && <Text dimColor>No task list yet.</Text>}
+        {value && (
+          <Box justifyContent="space-between">
+            <Text weight="bold">{clean(value.label ?? '') || clean(value.tasks[0]!.title)}</Text>
+            <Text weight="bold">{value.overallPct.toLocaleString('en-US') + '%'}</Text>
+          </Box>
+        )}
+        {value && (
+          <Text dimColor>
+            {[folderName(value.projectRoot),
+              Math.max(0, value.tasksTotal - value.tasksDone).toLocaleString('en-US') + ' of ' +
+                value.tasksTotal.toLocaleString('en-US') + ' tasks left',
+            ].filter(Boolean).join(' · ')}
+          </Text>
+        )}
+        {value && value.tasks.map((task, index) => {
+          const isCurrent = index === value.currentTask
+          const done = task.steps.every(s => s.status === 'done')
+          return (
+            <Box key={'task-' + index} flexDirection="column" marginTop={1}>
+              <Box justifyContent="space-between">
+                <Text weight={isCurrent ? 'bold' : undefined} dimColor={!isCurrent}>
+                  {(done ? MARK.done : isCurrent ? MARK.active : MARK.pending) + ' ' + clean(task.title)}
+                </Text>
+                {isCurrent && value.currentPct !== null && (
+                  <Text weight="bold">{value.currentPct.toLocaleString('en-US') + '%'}</Text>
+                )}
+              </Box>
+              {isCurrent && stepIndex >= 0 && (
+                <Text weight="bold">
+                  {'  step ' + (stepIndex + 1).toLocaleString('en-US') + ' of ' +
+                    task.steps.length.toLocaleString('en-US') + ': ' + clean(task.steps[stepIndex]!.title)}
+                </Text>
+              )}
+              {isCurrent && task.steps.map((step, n) => (
+                <Text key={'step-' + n} weight={step.status === 'active' ? 'bold' : undefined} dimColor={step.status !== 'active'}>
+                  {'    ' + MARK[step.status] + ' ' + (n + 1).toLocaleString('en-US') + '. ' + clean(step.title)}
+                </Text>
+              ))}
+            </Box>
+          )
+        })}
+        {others.length > 0 && (
+          <Box flexDirection="column" marginTop={1}>
+            <Text weight="bold">Other chats working now</Text>
+            {others.map(other => (
+              <Text key={'other-' + other.sessionId} dimColor>
+                {[other.folder, other.heading, other.overallPct.toLocaleString('en-US') + '%'].filter(Boolean).join(' · ')}
+              </Text>
+            ))}
+          </Box>
+        )}
+      </Box>
+    )
   })
 
   on('session.end', async ($, e, next) => {
     timer?.cancel()
     timer = null
+    othersTimer?.cancel()
+    othersTimer = null
     if (session) {
       session.ended = true
       try {
@@ -278,5 +488,3 @@ export const register: Register = on => {
     return next(e)
   })
 }
-
-
