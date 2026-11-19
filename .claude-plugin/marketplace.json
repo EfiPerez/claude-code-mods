@@ -6,33 +6,95 @@
   },
   "metadata": {
     "description": "Claude Code mods for everyday workflows",
-    "version": "1.3.0"
+    "version": "1.4.0"
   },
   "plugins": [
     {
       "name": "cache-monitor",
       "source": "./cache-monitor",
-      "description": "Keeps the 1-hour prompt cache warm while you step away and asks Claude to write a /handoff before a session gets too big (35-40% context, ~2 h idle, or near the 5-hour usage limit). Needs Node.js and a /handoff skill (session-handoff in efi-skills)."
+      "description": "Keeps the 1-hour prompt cache warm while you step away and asks Claude to write a /handoff before a session gets too big: at 35-40% context, after ~2 hours idle, or near the 5-hour usage limit. Zero-token checks on a timer; needs Node.js and a /handoff skill (session-handoff in efi-skills).",
+      "version": "1.2.0",
+      "author": {
+        "name": "Efi Perez"
+      },
+      "license": "MIT",
+      "category": "workflow",
+      "keywords": [
+        "prompt-cache",
+        "context",
+        "handoff",
+        "usage-limit",
+        "session"
+      ]
     },
     {
       "name": "effort-picker",
       "source": "./effort-picker",
-      "description": "Sets each request's effort level from the task, not the prompt: Claude picks a level once it understands the work, and helpers get a level per job."
+      "description": "Sets each Claude request's effort level from the task, not the prompt: Claude picks it once it understands the work, and helpers get a level per job.",
+      "version": "1.0.1",
+      "author": {
+        "name": "Efi Perez"
+      },
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "effort",
+        "reasoning",
+        "cost",
+        "subagents"
+      ]
     },
     {
       "name": "plain-language",
       "source": "./plain-language",
-      "description": "Claude's chat replies to you in plain, CEFR-level English: no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail."
+      "description": "Claude's chat replies to you in plain, CEFR-level English: no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail.",
+      "version": "1.0.0",
+      "author": {
+        "name": "Efi Perez"
+      },
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "plain-english",
+        "cefr",
+        "readability",
+        "non-technical"
+      ]
     },
     {
       "name": "plan-review",
       "source": "./plan-review",
-      "description": "When you approve a plan in plan mode, saves it to plans/ and has Claude run the codec-review skill on it before any code is written. Needs codec-review (codec-loop in the efi-skills marketplace)."
+      "description": "When you approve a plan in plan mode, saves it to plans/ and has Claude run the codec-review skill on it before any code is written. Needs codec-review (codec-loop in the efi-skills marketplace).",
+      "version": "1.0.0",
+      "author": {
+        "name": "Efi Perez"
+      },
+      "license": "MIT",
+      "category": "workflow",
+      "keywords": [
+        "plan-mode",
+        "review",
+        "codex",
+        "planning"
+      ]
     },
     {
       "name": "task-progress",
       "source": "./task-progress",
-      "description": "Shows Claude's task list while it works: a progress line above the prompt in Claude Desktop and the terminal, and a Tasks sidebar for VS Code, Cursor, Windsurf or VSCodium (installed with /install-viewer)."
+      "description": "Shows Claude's task list while it works: a side panel in Claude Desktop (with the other chats working right now), a progress line above the prompt in the terminal, and an optional Tasks sidebar for VS Code, Cursor, Windsurf or VSCodium (install it with /install-viewer).",
+      "version": "1.1.0",
+      "author": {
+        "name": "Efi Perez"
+      },
+      "license": "MIT",
+      "category": "productivity",
+      "keywords": [
+        "progress",
+        "tasks",
+        "side-panel",
+        "desktop",
+        "vscode"
+      ]
     }
   ]
 }
