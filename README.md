@@ -22,7 +22,7 @@ Then install only the mods you want:
 | `effort-picker` | Sets each request's effort level from the task, not the prompt: Claude picks a level once it understands the work, and helpers get a level per job. | `/plugin install effort-picker@efi-mods` |
 | `plain-language` | Claude's chat replies to you in plain, CEFR-level English (A2 or B1): no code unless asked, short task reports. Files, reviews and agent hand-offs keep full technical detail. | `/plugin install plain-language@efi-mods` |
 | `plan-review` | When you approve a plan in plan mode, saves it to `plans/` and has Claude run the `codec-review` skill on it before any code is written. **Needs `codec-review`** — see below. | `/plugin install plan-review@efi-mods` |
-| `task-progress` | Shows Claude's task list while it works: a progress line above the prompt in Claude Desktop and the terminal, and an optional **Tasks** sidebar for VS Code, Cursor, Windsurf or VSCodium (`/install-viewer`). | `/plugin install task-progress@efi-mods` |
+| `task-progress` | Shows Claude's task list while it works: a side panel in Claude Desktop (with the other chats working right now), a progress line above the prompt in the terminal, and an optional **Tasks** sidebar for VS Code, Cursor, Windsurf or VSCodium (`/install-viewer`). | `/plugin install task-progress@efi-mods` |
 
 Alternatively download the repo and load a mod locally using
 `claude --plugin-dir <downloaded-repo>/<mod>` on a compatible Claude Code
@@ -185,9 +185,16 @@ Third-party marketplace auto-update is off by default. Run
   with small steps marked done / active / pending) and updates it as it goes. The list's
   heading is the real goal of the work, e.g. after resuming a handoff it names the handoff's
   main task, not "Resume handoff".
-  - **Claude Desktop and the terminal:** one line above the prompt, e.g.
+  - **Claude Desktop:** a **Tasks** side panel opens with each chat. It shows the goal and
+    overall percentage, how many tasks are left, the current task with all its steps, the
+    other tasks as one line each, and under them the **other chats working right now**
+    (project folder, goal, percentage). A finished list clears when you send the next
+    prompt. Closed the panel? Run `/tasks-panel` to open it again. Nothing to install.
+  - **The terminal:** one line above the prompt, e.g.
     `Tasks: Plan the garden · step 1/2: List sun spots · 0%`. It disappears when every step
     is done. Nothing to install.
+  - **Choose where it shows:** the mod's `placement` setting (change it from `/plugin`): `auto` (default: the panel in Claude Desktop, the line in the terminal),
+    `band` (always the line), `pane` (always the panel) or `both`.
   - **VS Code, Cursor, Windsurf or VSCodium:** run `/install-viewer` once. It checks which of
     these editors are installed (by their `code`, `cursor`, `windsurf` and `codium`
     commands), asks which to install into, and installs the bundled **Claude Task Progress**
@@ -198,8 +205,11 @@ Third-party marketplace auto-update is off by default. Run
 - **How it works:** the mod gives Claude a `report_progress` tool and one short instruction
   on each prompt. Each call saves the whole list to
   `~/.claude/task-progress/<session-id>.json`; a small `<session-id>.alive` heartbeat file
-  (every 60 s) tells the viewer which chats are still open. The viewer only reads these
-  files and your chat titles; it sends nothing anywhere.
+  (every 60 s) tells the viewer and the Desktop panel which chats are still open. The viewer
+  only reads these files and your chat titles; it sends nothing anywhere. When a chat
+  starts, the mod deletes other chats' files that have not changed for 7 days, so the
+  folder does not grow forever (a mod has no delete call, so it runs the system's own
+  `del` on Windows or `/bin/rm` elsewhere, inside that folder only).
 - **The viewer package:** `viewer/task-progress-viewer.vsix.b64` is the extension in base64
   text (a mod can only write text files). `/install-viewer` turns it back into a `.vsix`
   with `certutil` (Windows) or `base64` (macOS/Linux). Its readable source is in
