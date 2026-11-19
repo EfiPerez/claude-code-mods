@@ -1,9 +1,19 @@
 {
   "name": "task-progress",
-  "version": "1.0.1",
-  "description": "Shows Claude's task list while it works: a progress line above the prompt in Claude Desktop and the terminal, and an optional Tasks sidebar for VS Code, Cursor, Windsurf or VSCodium (install it with /install-viewer).",
+  "version": "1.1.0",
+  "description": "Shows Claude's task list while it works: a side panel in Claude Desktop (with the other chats working right now), a progress line above the prompt in the terminal, and an optional Tasks sidebar for VS Code, Cursor, Windsurf or VSCodium (install it with /install-viewer).",
   "author": {
     "name": "Efi Perez"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "userConfig": {
+    "placement": {
+      "type": "string",
+      "title": "Where to show the task list",
+      "description": "auto = a side panel in Claude Desktop, one line above the prompt in the terminal. band = always the line above the prompt. pane = always the side panel. both = the panel and the line.",
+      "required": false,
+      "options": ["auto", "band", "pane", "both"],
+      "default": "auto"
+    }
+  }
 }
