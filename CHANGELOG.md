@@ -1,5 +1,16 @@
 # Changelog
 
+## [task-progress 1.1.0] - 2026-11-19
+### Added
+- Claude Desktop: a **Tasks** side panel replaces the line above the prompt. It shows the current task with all its steps, the other tasks as one line each, and the other chats working right now (project folder, goal, percentage). `/tasks-panel` opens it again after you close it
+- A `placement` setting: `auto` (default: the panel in Claude Desktop, the line in the terminal), `band`, `pane` or `both`
+### Fixed
+- Old progress files are now cleaned up without the VS Code viewer: when a chat starts, other chats' files unchanged for 7 days are deleted. Before, Claude Desktop and terminal users' `~/.claude/task-progress` folder grew by two files per chat forever
+- If the progress tool fails to start, Claude is no longer told to call it
+- A finished list clears when the next prompt starts, so the panel no longer reads "100%" while new work runs
+### Changed
+- Plugin descriptions now match between each `plugin.json` and the marketplace, and every marketplace entry lists version, author, license, category and keywords
+
 ## [task-progress 1.0.1] - 2026-11-18
 ### Security
 - The line above the prompt now replaces control characters (terminal escape codes, line breaks, tabs) in the goal, task and step titles with a space, so a title can no longer inject terminal escape sequences
